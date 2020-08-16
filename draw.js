@@ -1,7 +1,7 @@
 import {
     Scene, Text, Rectangle, Component,
-    Container, Line, Circle, Button
-    } from "https://unpkg.com/pencil.js/dist/pencil.esm.js";
+    Color, Container, Line, Circle, Button
+} from "https://unpkg.com/pencil.js/dist/pencil.esm.js";
 
 const cell_size = 64;
 const grid_w = 10;
@@ -16,6 +16,7 @@ const mark_color = "rgba(247, 208, 56, 0.5)";
 
 const type_thermo = 1;
 const type_cage = 2;
+const type_edge_cage = 3;
 
 const lock_normal = 1;
 const lock_corner = 2;
@@ -23,7 +24,7 @@ const lock_corner = 2;
 const colors = [
     "rgba(0, 0, 0, 1)",
     "rgba(207, 207, 207, 0.5)",
-    "rgba(255, 255, 255, 0.5)",
+    "rgba(255, 255, 255, 0)",
     "rgba(163, 224, 72, 0.5)",
     "rgba(210, 59, 231, 0.5)",
     "rgba(235, 117, 50, 0.5)",
@@ -31,6 +32,7 @@ const colors = [
     "rgba(247, 208, 56, 0.5)",
     "rgba(52, 187, 230, 0.5)"];
 
+let current_color = colors[1];
 let current_mode = "normal";
 let scene = null;
 let matrix = [];
@@ -39,6 +41,7 @@ let drag = false;
 let undo_stack = [];
 let thermo = null;
 let cage = null;
+let edge_cage = null;
 let outer = null;
 let underlay = null;
 let shift = false;
@@ -110,10 +113,13 @@ function set_cell(x, y, mode, newtext)
             m.lock_type = (newtext != "") ? lock_normal : 0;
             m.normal.options.fill = "black";
         }
-        m.normal.text = newtext;
-        const meas = Text.measure(newtext, m.normal.text.options);
-        m.normal.position.x = cell_size * 0.3; //(cell_size - meas.width) / 2;
-        m.normal.position.y = cell_size * 0.2; //(cell_size - meas.height) / 2;
+        if (!m.main_grid && newtext != "")
+            m.normal.text += newtext;
+        else
+            m.normal.text = newtext;
+        const meas = Text.measure(m.normal.text, m.normal.text.options);
+        m.normal.position.x = (cell_size - 2.5 * meas.width) / 2;
+        m.normal.position.y = cell_size * 0.15;
         m.center.text = "";
         m.corner.forEach(t => { t.text = ""; });
         m.side.forEach(t => { t.text = ""; });
@@ -180,7 +186,7 @@ function keydown(event) {
     if (event.key == "Shift") {
         shift = true;
     }
-    if (event.key == "Delete" || event.key == "Backspace") {
+    else if (event.key == "Delete" || event.key == "Backspace") {
         newtext = "";
         event.preventDefault();
     }
@@ -199,13 +205,41 @@ function keydown(event) {
                     rem.push(i);
                 }
             }
+            if (s.type == type_edge_cage) {
+                if (s.cells.find(c => c[0] == cursor[0] && c[1] == cursor[1])) {
+                    delete_edge_cage(s.cells);
+                    rem.push(i);
+                }
+            }
         });
         rem.forEach(r => stuff.splice(r, 1));
         scene.render();
         return;
     }
-    else if (event.key >= "1" && event.key <= "9") {
+    else if (event.key >= "0" && event.key <= "9") {
         newtext = event.key;
+    }
+    else if (event.key.startsWith("Arrow") && cursor) {
+        if (!shift) {
+            each_cell(m => {
+                if (m.mark) {
+                    m.rect.options.fill = "rgba(255, 255, 255, 0)";
+                    m.mark = false;
+                }
+            });
+        }
+
+        if (event.key == "ArrowUp" && cursor[1] > 0)
+            cursor[1] -= 1;
+        if (event.key == "ArrowDown" && cursor[1] < grid_h - 1)
+            cursor[1] += 1;
+        if (event.key == "ArrowLeft" && cursor[0] > 0)
+            cursor[0] -= 1;
+        if (event.key == "ArrowRight" && cursor[0] < grid_w - 1)
+            cursor[0] += 1;
+        mark(cursor[0], cursor[1]);
+        scene.render();
+        return;
     }
     else {
         return;
@@ -237,62 +271,115 @@ function mark(x, y) {
     let m = get(x, y);
     m.mark = true;
     m.rect.options.fill = mark_color;
-    scene.render();
 }
 
 function inner_hover(x, y) {
     if (!drag) return;
 
     if (current_mode == "thermo") {
-        delete_thermo(thermo.start);
+        if (thermo.objs)
+            thermo.objs.forEach(e => e.parent.remove(e));
         thermo.points.push([x, y]);
-        draw_thermo(thermo.start, thermo.points);
+        thermo.objs = draw_thermo(thermo.start, thermo.points);
         scene.render();
+    }
+}
+
+function move(event, x, y) {
+    if (!drag) return;
+
+    if (current_mode == "edge") {
+        let m = get(x, y);
+        let xp = event.position.x - outer.position.x - m.pos[0];
+        let yp = event.position.y - outer.position.y - m.pos[1];
+        if ((xp < cell_size * 0.4 || xp > cell_size * 0.6) && yp > cell_size * 0.4 && yp < cell_size * 0.6) {
+            console.log('add right', xp, yp);
+            if (xp < cell_size * 0.4)
+                m = get(x - 1, y);
+            let edge = new Line(
+                [cell_size, 0], [[0, cell_size]],
+                {fill: null, strokeWidth: 3, stroke: "black"});
+            m.edge_right.add(edge);
+            m.edge_right_show = true;
+            scene.render();
+        }
+        else if ((yp < cell_size * 0.4 || yp > cell_size * 0.6) && xp > cell_size * 0.4 && xp < cell_size * 0.6) {
+            console.log('add bottom', xp, yp);
+            if (yp < cell_size * 0.4)
+                m = get(x, y - 1);
+            let edge = new Line(
+                [0, cell_size], [[cell_size, 0]],
+                {fill: null, strokeWidth: 3, stroke: "black"});
+            m.edge_bottom.add(edge);
+            m.edge_bottom_show = true;
+            scene.render();
+        }
     }
 }
 
 function hover(x, y) {
     if (!drag) return;
 
-    if (current_mode == "thermo") {
+    if (current_mode == "thermo" || current_mode == "edge") {
+    } else if (current_mode == "edge_cage") {
+        delete_edge_cage(edge_cage.cells);
+        edge_cage.cells.push([x, y]);
+        draw_edge_cage(edge_cage.cells);
     } else if (current_mode == "cage") {
-        delete_cage(cage.cells);
+        if (cage.lines)
+            cage.lines.forEach(l => l.parent.remove(l));
         cage.cells.push([x, y]);
-        draw_cage(cage.cells);
+        cage.lines = draw_cage(cage.cells);
     } else {
         mark(x, y);
     }
+    scene.render();
 }
 
-function mousedown(x, y) {
+function mousedown_window() {
     if (!shift) {
-        for (let x = 0; x < grid_w; ++x) {
-            for (let y = 0; y < grid_h; ++y) {
-                let m = get(x, y);
-                if (m.mark) {
-                    m.rect.options.fill = "rgba(255, 255, 255, 0)";
-                    m.mark = false;
-                }
+        each_cell(m => {
+            if (m.mark) {
+                m.rect.options.fill = "rgba(255, 255, 255, 0)";
+                m.mark = false;
             }
-        }
+        });
     }
     scene.render();
+}
+
+function mousedown(event, x, y) {
+    if (!shift) {
+        each_cell(m => {
+            if (m.mark) {
+                m.rect.options.fill = "rgba(255, 255, 255, 0)";
+                m.mark = false;
+            }
+        });
+    }
 
     cursor = [x, y];
     drag = true;
 
     if (current_mode == "thermo") {
         thermo = {start: [x, y], points: []};
-        draw_thermo(thermo.start, thermo.points);
-        scene.render();
+        thermo.objs = draw_thermo(thermo.start, thermo.points);
     }
     else if (current_mode == "cage") {
         cage = {cells: [x, y]};
-        draw_cage(cage.cells);
+        cage.lines = draw_cage(cage.cells);
+    }
+    else if (current_mode == "edge_cage") {
+        edge_cage = {cells: [x, y]};
+        draw_edge_cage(edge_cage.cells);
+    }
+    else if (current_mode == "edge") {
     }
     else {
         mark(x, y);
     }
+
+    scene.render();
 }
 
 function delete_thermo(pos)
@@ -314,16 +401,23 @@ function center_px(p)
 }
 
 function draw_thermo(start, points) {
+    let _color = current_color.match(/[.\d]+/g).map(c => (c > 1) ? c / 255 : +c);
+    let color = new Color(..._color);
+    color.red = color.red * color.alpha + (1 - color.alpha) * 1;
+    color.green = color.green * color.alpha + (1 - color.alpha) * 1;
+    color.blue = color.blue * color.alpha + (1 - color.alpha) * 1;
+    color.alpha = 1;
     let start_px = center_px(start);
-    let bulb = new Circle(start_px, cell_size * 0.4, {fill: "#aaa"});
+    let bulb = new Circle(start_px, cell_size * 0.4, {fill: color});
     points = points.map(p => {
         let px = center_px(p);
         return {x: px[0] - start_px[0], y: px[1] - start_px[1]};
     });
     let line = new Line(start_px, points,
-        {stroke: "#aaa", strokeWidth: cell_size * 0.3, join: Line.joins.miter});
+        {stroke: color, strokeWidth: cell_size * 0.3, join: Line.joins.miter});
     underlay.add(bulb, line);
     scene.render();
+    return [bulb, line];
 }
 
 function mouseup() {
@@ -336,11 +430,16 @@ function mouseup() {
         stuff.push({type: type_cage, cells: cage.cells});
         cage = null;
     }
+    else if (current_mode == "edge_cage" && edge_cage) {
+        stuff.push({type: type_edge_cage, cells: edge_cage.cells});
+        edge_cage = null;
+    }
 }
 
 function set_mode(mode)
 {
     current_mode = mode;
+    scene.render();
 }
 
 class CageLine extends Line {
@@ -370,12 +469,14 @@ function delete_cage(cells)
             m.r_cage.empty();
     });
 }
+
 function draw_cage(cells)
 {
     let get_cage = (x, y) => {
         return cells.find(e => e[0] == x && e[1] == y);
     };
 
+    let lines = [];
     each_cell(m => {
         let x = m.x;
         let y = m.y;
@@ -397,48 +498,115 @@ function draw_cage(cells)
         if (!left) {
             let start = m.corner_pos[0];
             let end = m.corner_pos[3];
-            if (up) start = m.corner_ext_pos[1];
-            if (down) end = m.corner_ext_pos[6];
+            if (up) {
+                start = m.corner_ext_pos[1].slice(0);
+                start[1] -= (!ul ? 0 : corner_offset);
+            }
+            if (down) {
+                end = m.corner_ext_pos[6].slice(0);
+                end[1] += (!dl ? 0 : corner_offset);
+            }
             add_line(start, end);
         }
         if (!right) {
             let start = m.corner_pos[1];
             let end = m.corner_pos[2];
-            if (up) start = m.corner_ext_pos[2];
-            if (down) end = m.corner_ext_pos[5];
+            if (up) {
+                start = m.corner_ext_pos[2].slice(0);
+                start[1] -= (!ur ? 0 : corner_offset);
+            }
+            if (down) {
+                end = m.corner_ext_pos[5].slice(0);
+                end[1] += (!dr ? 0 : corner_offset);
+            }
             add_line(start, end);
         }
         if (!up) {
             let start = m.corner_pos[0];
             let end = m.corner_pos[1];
-            if (left) start = m.corner_ext_pos[0];
-            if (right) end = m.corner_ext_pos[3];
+            if (left) {
+                start = m.corner_ext_pos[0].slice(0);
+                start[0] -= (!ul ? 0 : corner_offset);
+            }
+            if (right) {
+                end = m.corner_ext_pos[3].slice(0);
+                end[0] += (!ur ? 0 : corner_offset);
+            }
             add_line(start, end);
         }
         if (!down) {
             let start = m.corner_pos[3];
             let end = m.corner_pos[2];
-            if (left) start = m.corner_ext_pos[7];
-            if (right) end = m.corner_ext_pos[4];
+            if (left) {
+                start = m.corner_ext_pos[7].slice(0);
+                start[0] -= (!dl ? 0 : corner_offset);
+            }
+            if (right) {
+                end = m.corner_ext_pos[4].slice(0);
+                end[0] += (!dr ? 0 : corner_offset);
+            }
             add_line(start, end);
         }
-        if (up && left && !ul) {
-            add_line(m.corner_pos[0], m.corner_ext_pos[0]);
-            add_line(m.corner_pos[0], m.corner_ext_pos[1]);
-        }
-        if (down && right && !dr) {
-            add_line(m.corner_pos[2], m.corner_ext_pos[4]);
-            add_line(m.corner_pos[2], m.corner_ext_pos[5]);
-        }
-        if (up && right && !ur) {
-            add_line(m.corner_pos[1], m.corner_ext_pos[2]);
-            add_line(m.corner_pos[1], m.corner_ext_pos[3]);
-        }
-        if (down && left && !dl) {
-            add_line(m.corner_pos[3], m.corner_ext_pos[6]);
-            add_line(m.corner_pos[3], m.corner_ext_pos[7]);
-        }
         l.forEach(e => m.r_cage.add(e));
+        lines = lines.concat(l);
+    });
+    scene.render();
+    return lines;
+}
+
+function delete_edge_cage(cells)
+{
+    let get_cage = (x, y) => {
+        return cells.find(e => e[0] == x && e[1] == y);
+    };
+
+    each_cell(m => {
+        if (get_cage(m.x, m.y))
+            m.edge_cage.empty();
+    });
+}
+
+function draw_edge_cage(cells)
+{
+    let get_cage = (x, y) => {
+        return cells.find(e => e[0] == x && e[1] == y);
+    };
+
+    each_cell(m => {
+        let x = m.x;
+        let y = m.y;
+        if (!get_cage(x, y)) return;
+        let up = get_cage(x, y - 1);
+        let down = get_cage(x, y + 1);
+        let left = get_cage(x - 1, y);
+        let right = get_cage(x + 1, y);
+        let l = [];
+        let add_line = (start, end) => {
+            l.push(new Line(
+                start, [[end[0] - start[0], end[1] - start[1]]],
+                {strokeWidth: 4, stroke: "black"}));
+        }
+        if (!left) {
+            let start = m.r_corner_pos[0];
+            let end = m.r_corner_pos[3];
+            add_line(start, end);
+        }
+        if (!right) {
+            let start = m.r_corner_pos[1];
+            let end = m.r_corner_pos[2];
+            add_line(start, end);
+        }
+        if (!up) {
+            let start = m.r_corner_pos[0];
+            let end = m.r_corner_pos[1];
+            add_line(start, end);
+        }
+        if (!down) {
+            let start = m.r_corner_pos[3];
+            let end = m.r_corner_pos[2];
+            add_line(start, end);
+        }
+        l.forEach(e => m.edge_cage.add(e));
     });
     scene.render();
 }
@@ -452,14 +620,11 @@ function load(base64)
     underlay.empty();
 
     stuff = [];
-    for (let x = 0; x < grid_w; ++x) {
-        for (let y = 0; y < grid_h; ++y) {
-            let m = get(x, y);
-            m.lock_type = 0;
-            m.normal.text = "";
-            m.center.text = "";
-        }
-    }
+    each_cell(m => {
+        m.lock_type = 0;
+        m.normal.text = "";
+        m.center.text = "";
+    });
 
     data.cells.forEach(c => {
         if (c[2] == lock_normal) {
@@ -476,6 +641,9 @@ function load(base64)
         }
         else if (s.type == type_cage) {
             draw_cage(s.cells);
+        }
+        else if (s.type == type_edge_cage) {
+            draw_edge_cage(s.cells);
         }
     });
 
@@ -499,6 +667,8 @@ function generate_url()
             out.cells.push([m.x, m.y, m.lock_type, m.cage_corner.text]);
         }
     });
+
+    console.log(out.stuff);
 
     let coded = msgpack.encode(out);
     let packed = pako.deflate(coded);
@@ -529,6 +699,42 @@ function undo() {
             u = undo_stack.pop();
         }
     } while (count > 0);
+    scene.render();
+}
+
+function add_grid() {
+    let box_w = grid_w - grid_left;
+    let box_h = grid_h - grid_top;
+    for (let x = 0; x < box_w; ++x) {
+        for (let y = 0; y < box_h; ++y) {
+            if (x % 3 == 0) {
+                let edge = new Line(
+                    [0, 0], [[0, cell_size]],
+                    {fill: null, strokeWidth: 4, stroke: "black"});
+                let m = get(x + grid_left, y + grid_top);
+                m.edge_right.add(edge);
+                m.edge_right_show = true;
+            }
+            if (y % 3 == 0) {
+                let edge = new Line(
+                    [0, 0], [[cell_size, 0]],
+                    {fill: null, strokeWidth: 4, stroke: "black"});
+                let m = get(x + grid_left, y + grid_top);
+                m.edge_bottom.add(edge);
+                m.edge_bottom_show = true;
+            }
+        }
+    }
+    scene.render();
+}
+
+function set_color(c) {
+    current_color = colors[c];
+
+    each_cell(m => {
+        if (m.mark)
+            m.r_color.options.fill = current_color;
+    });
     scene.render();
 }
 
@@ -573,13 +779,17 @@ function render(code) {
             let cont = new Container([xp, yp]);
             options.strokeWidth = main_grid ? 1 : 0;
             let r = new Rectangle([0, 0], cell_size, cell_size, options);
+            options.strokeWidth = 0;
+            let edge_right = new Rectangle([0, 0], cell_size, cell_size, options);
+            let edge_bottom = new Rectangle([0, 0], cell_size, cell_size, options);
+            let edge_cage = new Rectangle([0, 0], cell_size, cell_size, options);
             let r_cage = new Rectangle([0, 0], cell_size, cell_size, options);
             let r_color = new Rectangle([0, 0], cell_size, cell_size, options);
             let r_hover = new Rectangle(
                 [hover_offset, hover_offset],
                 cell_size - hover_offset * 2,
                 cell_size - hover_offset * 2, options_inner);
-            let normal = new Text([0, cell_size * 0.1], "", textOptions);
+            let normal = new Text([0, cell_size * 0.5], "", textOptions);
             let center = new Text([0, cell_size * 0.4], "", centerTextOptions);
             let corner_pos = [];
             corner_pos[0] = [corner_offset, corner_offset];
@@ -597,6 +807,7 @@ function render(code) {
             let corner = [];
             if (main_grid) {
                 cornerTextOptions.fontSize = cell_size * 0.25;
+                cageCornerTextOptions.fontSize = cell_size * 0.25;
                 corner_pos.forEach((p, i) => {
                     p = p.slice(0);
                     p[0] -= cell_size * 0.025;
@@ -622,6 +833,11 @@ function render(code) {
                 });
             }
 
+            let r_corner = [];
+            r_corner[0] = [0, 0];
+            r_corner[1] = [cell_size, 0];
+            r_corner[2] = [cell_size, cell_size];
+            r_corner[3] = [0, cell_size];
             let corner_ext_pos = [];
             corner_ext_pos[0] = [0, corner_offset];
             corner_ext_pos[1] = [corner_offset, 0];
@@ -631,42 +847,70 @@ function render(code) {
             corner_ext_pos[5] = [cell_size - corner_offset, cell_size];
             corner_ext_pos[6] = [corner_offset, cell_size];
             corner_ext_pos[7] = [0, cell_size - corner_offset];
-            cont.add(r_color, r, r_cage, r_hover, normal, center,
+            cont.add(r_color, r, r_cage, edge_cage,
+                     edge_right, edge_bottom, r_hover, normal, center,
                      ...cage_corner, ...corner, ...side);
-            cont.on("mousedown", () => mousedown(x, y));
+            cont.on("mousedown", (event) => mousedown(event, x, y));
             cont.on("hover", () => hover(x, y));
+            cont.on("mousemove", (event) => move(event, x, y));
             r_hover.on("hover", () => inner_hover(x, y));
             matrix[y][x] = {
                 x: x, y: y, pos: [xp, yp], cont: cont, rect: r, normal: normal, center: center,
+                r_corner_pos: r_corner,
                 corner: corner, side: side,
                 corner_pos: corner_pos, center_pos: center_pos, side_pos: side_pos,
                 corner_ext_pos: corner_ext_pos,
                 cage_corner: cage_corner[0],
+                edge_cage: edge_cage,
+                edge_right: edge_right,
+                edge_bottom: edge_bottom,
                 r_cage: r_cage, r_color: r_color, main_grid: main_grid};
             outer.add(cont);
         }
     }
 
-    let box_w = grid_w - grid_left;
-    let box_h = grid_h - grid_top;
-    for (let x = 0; x < box_w / 3; ++x) {
-        for (let y = 0; y < box_h / 3; ++y) {
-            let box = new Rectangle(
-                [cell_size * grid_left + cell_size * 3 * x,
-                 cell_size * grid_top + cell_size * 3 * y],
-                cell_size * 3, cell_size * 3, {fill: null, strokeWidth: 3, stroke: "black"});
-            outer.add(box);
+    let frame_w = grid_w - grid_left;
+    let frame_h = grid_h - grid_top;
+    let frame = new Rectangle(
+        [grid_left * cell_size, grid_top * cell_size],
+        frame_w * cell_size, frame_h * cell_size,
+        {strokeWidth: 4, stroke: "black", fill: null});
+    outer.add(frame);
+
+    let color_buttons = new Container([outer_x - 150, outer_y + grid_h * cell_size]);
+    scene.add(color_buttons);
+    let c = 0;
+    let c_buttons = [];
+    for (let y = 0; y < 3; ++y) {
+        for (let x = 0; x < 3; ++x) {
+            let _c = c + 0;
+            let b = new Button([x * 48, y * 48], {fontSize: 32, value: '  '});
+            let r = new Rectangle([6, 6], 32, 32, {fill: colors[c],
+                cursor: Component.cursors.pointer});
+            b.add(r);
+            r.on("click", () => set_color(_c));
+            c_buttons.push(b);
+            ++c;
         }
     }
+    c_buttons.reverse().forEach(e => color_buttons.add(e));
 
     let buttons = new Container([outer_x + outer_w + 50, outer_y]);
+    scene.add(buttons);
     const button_desc = [
         ["Normal", () => set_mode("normal")],
         ["Center", () => set_mode("center")],
         ["Corner", () => set_mode("corner")],
         ["Undo", () => undo()],
+    ];
+    let set_buttons = new Container([outer_x - 150, outer_y]);
+    scene.add(set_buttons);
+    const set_button_desc = [
         ["Set", () => set_mode("set")],
         ["Set corner", () => set_mode("set_corner")],
+        ["Add grid", () => add_grid()],
+        ["Edge cage", () => set_mode("edge_cage")],
+        ["Edges", () => set_mode("edge")],
         ["Thermo", () => set_mode("thermo")],
         ["Cage", () => set_mode("cage")],
         ["Color", () => set_mode("color")],
@@ -681,7 +925,15 @@ function render(code) {
         bb.push(b);
     });
     bb.reverse().forEach(e => buttons.add(e));
-    scene.add(buttons);
+    ypos = 0;
+    bb = []
+    set_button_desc.forEach(e => {
+        let b = new Button([0, ypos], {fontSize: 32, value: e[0]});
+        ypos += 64;
+        b.on("click", e[1]);
+        bb.push(b);
+    });
+    bb.reverse().forEach(e => set_buttons.add(e));
 
     scene.render();
 
